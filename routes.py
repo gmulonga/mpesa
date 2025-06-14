@@ -7,6 +7,11 @@ import os
 from datetime import datetime
 import threading
 import time
+from flask import Flask
+import threading
+
+payment_status_store = {}
+payment_status_lock = threading.Lock()
 
 status_bp = Blueprint('transaction_status', __name__)
 
@@ -69,31 +74,48 @@ def stk_push():
 
         checkout_request_id = res_data["CheckoutRequestID"]
 
+        with payment_status_lock:
+            payment_status_store[checkout_request_id] = None
+
         def delayed_query():
             time.sleep(20)
-            print("No callback received within 15a seconds. Querying status manually...")
-            try:
-                query_result = query_transaction_status(checkout_request_id, access_token, timestamp)
-                print("Manual Status Query Result:", query_result)
-            except Exception as e:
-                print("Error querying transaction status:", str(e))
+            with payment_status_lock:
+                if payment_status_store[checkout_request_id] is None:
+                    print("No callback, querying manually...")
+                    try:
+                        status_result = query_transaction_status(checkout_request_id, access_token, get_timestamp())
+                        payment_status_store[checkout_request_id] = status_result
+                    except Exception as e:
+                        payment_status_store[checkout_request_id] = {"error": str(e)}
 
         threading.Thread(target=delayed_query).start()
 
-        return jsonify({"success": True, "message": "STK Push initiated successfully", "data": res_data})
+        waited = 0
+        while waited < 20:
+            time.sleep(1)
+            with payment_status_lock:
+                result = payment_status_store.get(checkout_request_id)
+                if result:
+                    del payment_status_store[checkout_request_id]
+                    return jsonify({"success": True, "result": result})
+            waited += 1
+
+        # Timeout
+        return jsonify({"success": False, "message": "Timeout waiting for payment status"}), 504
 
     except Exception as e:
         return jsonify({"success": False, "message": "Failed to initiate STK Push", "error": str(e)}), 500
+
 
 @bp.route("/callback", methods=["POST"])
 def stk_callback():
     callback_data = request.json.get("Body", {}).get("stkCallback", {})
     print("Callback received:", callback_data)
 
-    if callback_data.get("ResultCode") == 0:
-        print("Payment Successful:", callback_data.get("CallbackMetadata", {}).get("Item"))
-    else:
-        print("Payment Failed:", callback_data.get("ResultDesc"))
+    checkout_id = callback_data.get("CheckoutRequestID")
+
+    with payment_status_lock:
+        payment_status_store[checkout_id] = callback_data
 
     return jsonify({"ResultCode": 0, "ResultDesc": "Accepted"})
 

@@ -11,5 +11,5 @@ CORS(app)
 app.register_blueprint(bp, url_prefix="/api/mpesa")
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000))
+    port = int(os.getenv("PORT", 8000))
     app.run(debug=True, port=port)
