@@ -4,6 +4,9 @@ import os
 import base64
 from utils import get_timestamp, get_password, format_phone_number
 import os
+from datetime import datetime
+import threading
+import time
 
 status_bp = Blueprint('transaction_status', __name__)
 
@@ -36,7 +39,6 @@ def stk_push():
 
         formatted_phone = format_phone_number(phone)
         access_token = get_access_token()
-
         timestamp = get_timestamp()
         password = get_password(timestamp)
         short_code = os.getenv("BUSINESS_SHORT_CODE")
@@ -63,8 +65,22 @@ def stk_push():
 
         res = requests.post("https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest", json=payload, headers=headers)
         res.raise_for_status()
+        res_data = res.json()
 
-        return jsonify({"success": True, "message": "STK Push initiated successfully", "data": res.json()})
+        checkout_request_id = res_data["CheckoutRequestID"]
+
+        def delayed_query():
+            time.sleep(20)
+            print("No callback received within 15a seconds. Querying status manually...")
+            try:
+                query_result = query_transaction_status(checkout_request_id, access_token, timestamp)
+                print("Manual Status Query Result:", query_result)
+            except Exception as e:
+                print("Error querying transaction status:", str(e))
+
+        threading.Thread(target=delayed_query).start()
+
+        return jsonify({"success": True, "message": "STK Push initiated successfully", "data": res_data})
 
     except Exception as e:
         return jsonify({"success": False, "message": "Failed to initiate STK Push", "error": str(e)}), 500
@@ -81,3 +97,23 @@ def stk_callback():
 
     return jsonify({"ResultCode": 0, "ResultDesc": "Accepted"})
 
+
+def query_transaction_status(checkout_request_id, access_token, timestamp):
+    short_code = os.getenv("BUSINESS_SHORT_CODE")
+    password = get_password(timestamp)
+
+    payload = {
+        "BusinessShortCode": short_code,
+        "Password": password,
+        "Timestamp": timestamp,
+        "CheckoutRequestID": checkout_request_id
+    }
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
+
+    response = requests.post("https://sandbox.safaricom.co.ke/mpesa/stkpushquery/v1/query", json=payload, headers=headers)
+    response.raise_for_status()
+    return response.json()
